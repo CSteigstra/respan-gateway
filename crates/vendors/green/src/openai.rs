@@ -52,7 +52,7 @@ impl Dialect for OpenAi {
     type Input = Input;
     type Output = Output;
 
-    fn request(&self, _: &mut RequestHead) -> Result<Option<Rewrite>, Fault> {
+    fn request(&self, _: &mut RequestHead, _: Option<&Bytes>) -> Result<Option<Rewrite>, Fault> {
         Ok(Some(Box::new(completion_limit)))
     }
 }
