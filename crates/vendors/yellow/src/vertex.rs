@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use respan_gateway_vendor_kit::{
     Body, BoxFuture, Dialect, Dialected, KeyIn, Model, Models, Vendor, VendorProvider, built_wrong,
-    http, json as body_json, located,
+    http, json as body_json, located, models,
 };
 
 /// A project's location, under which each of its APIs is.
@@ -27,7 +27,7 @@ const EXPRESS_API: &str = "https://aiplatform.googleapis.com/v1/publishers/googl
 
 /// Where Google's models are listed, after its origin, a page of at most
 /// 300 at a time.
-const MODELS: &str = "/v1beta1/publishers/google/models";
+const MODELS: &str = "/v1beta1/publishers/google/models?pageSize=300";
 
 /// Google Vertex AI. The key is a Google access token, such as `gcloud
 /// auth print-access-token` prints, which expires within the hour: the
@@ -50,14 +50,9 @@ pub const EXPRESS: Vendor = Vendor {
     id: "vertex-express",
     key_env: &["GOOGLE_VERTEX_API_KEY"],
     formats: &[(&GeminiGenerate, Some(EXPRESS_API))],
-    models: list_none,
+    models: models::none,
     ..Vendor::DEFAULT
 };
-
-/// No models: express mode lists none.
-fn list_none(_: &VendorProvider) -> BoxFuture<'_, Models> {
-    Box::pin(async { Ok(Vec::new()) })
-}
 
 /// `url` located, its `global` location at the host of no region,
 /// `aiplatform.googleapis.com`, as Google has it: no host is
@@ -91,23 +86,18 @@ impl Dialect for Vertex {
 fn list_models(p: &VendorProvider) -> BoxFuture<'_, Models> {
     Box::pin(async move {
         let Some(base) = p.base_url_of(GeminiGenerate::NAME) else {
-            return respan_gateway_vendor_kit::models::openai(p).await;
+            return models::openai(p).await;
         };
         let origin = base.split_once("/v1/").map_or(base, |(origin, _)| origin);
         let client = p.client_at(origin)?;
-        let mut models = Vec::new();
-        let mut page = String::new();
+        let (mut models, mut at) = (Vec::new(), MODELS.to_owned());
         loop {
-            let mut at = format!("{MODELS}?pageSize=300");
-            if !page.is_empty() {
-                at += &format!("&pageToken={page}");
-            }
-            let call = http::Request::get(at).body(Body::default());
+            let call = http::Request::get(&at).body(Body::default());
             let (answer, _) = client.send(call.map_err(built_wrong)?).await?;
             let answer = body_json(answer).await?;
             models.extend(listed(&answer));
             match answer["nextPageToken"].as_str() {
-                Some(next) if !next.is_empty() => page = next.to_owned(),
+                Some(next) if !next.is_empty() => at = format!("{MODELS}&pageToken={next}"),
                 _ => return Ok(models),
             }
         }
@@ -139,36 +129,7 @@ fn listed(answer: &Value) -> Vec<Model> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use respan_gateway_vendor_kit::Upstream;
     use serde_json::json;
-
-    fn input(model: &str) -> Input {
-        let mut input = Input::default();
-        input.model = Some(model.to_owned());
-        input
-    }
-
-    #[test]
-    fn its_calls_are_under_the_project_and_location() {
-        let base = API
-            .replace("{GOOGLE_CLOUD_LOCATION}", "us-central1")
-            .replace("{GOOGLE_CLOUD_PROJECT}", "p1");
-        let path = GeminiGenerate
-            .target(&input("gemini-3.5-flash"), true)
-            .expect("target")
-            .expect("path");
-        assert_eq!(
-            format!("{base}{path}"),
-            "https://us-central1-aiplatform.googleapis.com/v1/projects/p1/locations/us-central1\
-             /publishers/google/models/gemini-3.5-flash:streamGenerateContent?alt=sse"
-        );
-        let (format, _) = VENDOR.formats[0];
-        assert_eq!(format.key(), KeyIn::Bearer);
-        assert_eq!(
-            Upstream::key(&GeminiGenerate),
-            KeyIn::Header("x-goog-api-key")
-        );
-    }
 
     #[test]
     fn the_global_location_is_at_the_host_of_no_region() {

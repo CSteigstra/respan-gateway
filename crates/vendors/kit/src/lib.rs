@@ -68,7 +68,7 @@ pub struct Vendor {
 
 /// A vendor's base URL, each `{NAME}` in it the environment variable
 /// `NAME`; `Err` with the name of one not set ([`located`]).
-pub type Locate = for<'a> fn(&'a str) -> Result<String, &'a str>;
+pub type Locate = fn(&str) -> Result<String, &str>;
 
 impl std::fmt::Debug for Vendor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

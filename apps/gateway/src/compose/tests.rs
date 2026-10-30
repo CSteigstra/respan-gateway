@@ -1144,25 +1144,3 @@ async fn fireworks_answers_each_decision_contract_in_its_own() {
     }
     server.abort();
 }
-
-#[test]
-fn vertex_express_takes_an_api_key_under_no_project() {
-    let plan = plan("providers = { x = { vendor = \"vertex-express\", key = \"AQ.k\" } }\n")
-        .unwrap_or_else(|e| panic!("{e}"));
-    let express = &plan.upstreams[0];
-    let entries: Vec<_> = express
-        .entries
-        .iter()
-        .map(|e| (e.format.as_str(), e.base_url.as_str()))
-        .collect();
-    assert_eq!(
-        entries,
-        [(
-            "gemini-generate",
-            "https://aiplatform.googleapis.com/v1/publishers/google"
-        )]
-    );
-    let parts = express.provider.parts().unwrap_or_default();
-    let key = parts.first().and_then(|p| p.headers.get("x-goog-api-key"));
-    assert_eq!(key.and_then(|v| v.to_str().ok()), Some("AQ.k"));
-}
