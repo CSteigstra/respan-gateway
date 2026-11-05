@@ -1,0 +1,89 @@
+# Chainfill fork: build the Python wheels and attach them to a GitHub release
+# on a `cf-v*` tag, so the Chainfill backend can pin a wheel URL (as it pins
+# its LiteLLM fork) without a Rust toolchain in its image.
+name: chainfill-wheels
+
+on:
+  push:
+    tags: ["cf-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ui:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: apps/ui/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/ui/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ui-dist
+          path: apps/ui/dist
+
+  wheels:
+    needs: ui
+    strategy:
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ui-dist
+          path: apps/ui/dist
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: python
+          manylinux: "2_28"
+          args: --release --out dist
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Test the wheel
+        shell: bash
+        run: |
+          python -m venv /tmp/wheel-venv
+          . /tmp/wheel-venv/bin/activate
+          pip install pytest openai anthropic httpx
+          pip install --no-index --find-links python/dist respan-gateway
+          cd python && pytest tests
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.os }}
+          path: python/dist/*.whl
+
+  release:
+    needs: wheels
+    if: startsWith(github.ref, 'refs/tags/cf-v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          merge-multiple: true
+          path: dist
+      - run: ls -l dist && (cd dist && sha256sum *.whl | tee SHA256SUMS)
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME" dist/*.whl dist/SHA256SUMS
+          --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --prerelease
+          --notes "Chainfill fork of respan-gateway: Vertex AI (Gemini, Claude rawPredict, tuned endpoints, eu/us multi-regions) with Google tokens minted from a service account. Commit $GITHUB_SHA."
