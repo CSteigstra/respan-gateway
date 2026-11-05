@@ -266,12 +266,7 @@ pub(crate) fn fits(delta: &Delta, block: &Block) -> bool {
 /// Whether a reply shows the client something: not a start, usage, or the
 /// opening or end of a text block, which says nothing yet.
 pub(crate) fn shows(reply: &Output) -> bool {
-    match reply {
-        Output::Delta { delta, .. } => !delta.as_str().is_empty(),
-        Output::BlockStart { kind, .. } => *kind != Block::Text,
-        Output::Finish(_) => true,
-        _ => false,
-    }
+    reply.shows()
 }
 
 /// A message's content in format `C`: a string if it is one text with

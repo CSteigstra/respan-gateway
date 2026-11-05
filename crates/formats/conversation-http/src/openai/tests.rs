@@ -1907,3 +1907,41 @@ fn a_parts_cache_marker_reaches_claude() {
     let responses = responses.unwrap_or_default();
     assert!(!responses.to_string().contains("cache_control"));
 }
+
+/// A Chat Completions client reaches a model behind Responses with OpenAI's
+/// cache breakpoints and asks for a reasoning summary as LiteLLM takes it:
+/// neither is dropped on the way.
+#[test]
+fn a_cache_breakpoint_and_a_reasoning_summary_reach_responses() {
+    let marker = json!({ "mode": "explicit" });
+    let body = json!({ "model": "m", "reasoning_effort": { "effort": "low", "summary": "auto" },
+        "messages": [
+        { "role": "user", "content": [
+            { "type": "text", "text": "stable", "prompt_cache_breakpoint": marker },
+            { "type": "text", "text": "tail" },
+        ]},
+    ]});
+    let chat = OpenAiChat.decode_json(&body);
+    let sent = OpenAiResponses.encode_request(&chat).map(Value::from);
+    let sent = sent.unwrap_or_default();
+    let content = &sent["input"][0]["content"];
+    assert_eq!(content[0]["prompt_cache_breakpoint"], marker);
+    assert!(content[1].get("prompt_cache_breakpoint").is_none());
+    assert_eq!(sent["reasoning"]["effort"], "low");
+    assert_eq!(sent["reasoning"]["summary"], "auto");
+    // Another format has no such breakpoint, and a plain effort asks for no summary.
+    let gemini = GeminiGenerate.encode_request(&chat).map(Value::from);
+    assert!(
+        !gemini
+            .unwrap_or_default()
+            .to_string()
+            .contains("prompt_cache_breakpoint")
+    );
+    let plain = json!({ "model": "m", "reasoning_effort": "low", "messages": [] });
+    let sent = OpenAiResponses.encode_request(&OpenAiChat.decode_json(&plain));
+    assert!(
+        sent.map(Value::from).unwrap_or_default()["reasoning"]
+            .get("summary")
+            .is_none()
+    );
+}

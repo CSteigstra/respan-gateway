@@ -155,6 +155,12 @@ pub trait Schema: Copy + Send + Sync + 'static {
         false
     }
 
+    /// Whether `uri` is a call of this format's, so a client's request there
+    /// carries on what the format's spec lets it ([`Schema::CARRIED`]).
+    fn own_path(uri: &http::Uri) -> bool {
+        uri.path().ends_with(Self::PATH)
+    }
+
     /// Whether a client's request is of this format: a `POST` to a path
     /// ending in [`Schema::PATH`].
     fn accepts<B>(&self, request: &http::Request<B>) -> bool {

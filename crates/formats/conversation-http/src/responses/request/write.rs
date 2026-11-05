@@ -2,7 +2,7 @@
 
 use super::super::RESPONSES;
 use super::{ITEM_ROLE, MESSAGE, ROLES};
-use crate::fields::media_url;
+use crate::fields::{kept_on_part, media_url};
 use crate::schema::{NativeFieldsExt, merge_missing, untranslatable, warn_reasoning};
 use respan_gateway_conversation::{Content, Input, Media, MediaSource, Message, Role};
 use respan_gateway_core::{Fault, NativeFields};
@@ -146,7 +146,7 @@ fn write_input_part(c: &Content) -> Result<Value, Fault> {
             let mut part = Map::new();
             part.insert("type".into(), "input_text".into());
             part.insert("text".into(), text.as_str().into());
-            part.extend(native.fields_for(RESPONSES));
+            part.extend(kept_on_part(RESPONSES, native));
             Ok(part.into())
         }
         Content::Image(media) | Content::Document(media) => write_media(c, media),
@@ -161,7 +161,7 @@ pub(super) fn write_media(c: &Content, media: &Media) -> Result<Value, Fault> {
     if image && media.name.is_some() {
         return Err(untranslatable("a display name on image content"));
     }
-    let native = media.native.fields_for(RESPONSES);
+    let native = kept_on_part(RESPONSES, &media.native);
     let url = || media_url(media);
     let mut v = match (image, &media.source) {
         (true, _) => json!({ "type": "input_image", "image_url": url() }),

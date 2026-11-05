@@ -103,7 +103,7 @@ pub(crate) fn post<C: Schema>(
 pub(crate) fn own_request<C: Schema>(original: Option<&Original>) -> Option<&http::Request<Bytes>> {
     original
         .and_then(Original::get)
-        .filter(|r| r.uri().path().ends_with(C::PATH))
+        .filter(|r| C::own_path(r.uri()))
 }
 
 /// Writes a conversation as a request, asking for a stream if `stream`, in

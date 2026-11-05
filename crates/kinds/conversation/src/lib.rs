@@ -631,6 +631,17 @@ impl Output {
             Output::Usage(_) | Output::Native(respan_gateway_core::NativeValue { .. })
         )
     }
+
+    /// Whether it shows the client something: not a start, usage, or the
+    /// opening or end of a text block, which says nothing yet.
+    pub fn shows(&self) -> bool {
+        match self {
+            Output::Delta { delta, .. } => !delta.as_str().is_empty(),
+            Output::BlockStart { kind, .. } => *kind != Block::Text,
+            Output::Finish(_) => true,
+            _ => false,
+        }
+    }
 }
 
 /// Why the model stopped.

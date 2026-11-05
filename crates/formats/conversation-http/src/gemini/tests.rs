@@ -94,6 +94,29 @@ fn a_path_names_the_model_and_the_method() {
 }
 
 #[test]
+fn its_own_clients_schema_stays_as_it_came() {
+    let schema = json!({"type": "OBJECT", "properties": {"b": {"type": "STRING"}, "a": {"type": "STRING"}},
+        "propertyOrdering": ["b", "a"]});
+    let original = json!({"generationConfig": {"responseSchema": schema}});
+    let mut sent =
+        json!({"generationConfig": {"responseJsonSchema": {"type": "object"}, "temperature": 0}});
+    let body = sent.as_object_mut().expect("an object");
+    GeminiGenerate::respell(&original, body);
+    assert_eq!(
+        sent["generationConfig"],
+        json!({"temperature": 0, "responseSchema": schema})
+    );
+    assert!(GeminiGenerate::own_path(
+        &"/v1/projects/p/locations/l/endpoints/1:generateContent"
+            .parse()
+            .expect("a URI")
+    ));
+    assert!(!GeminiGenerate::own_path(
+        &"/v1/chat/completions".parse().expect("a URI")
+    ));
+}
+
+#[test]
 fn every_flash_keeps_a_medium_effort() {
     let level = |model: &str| {
         let mut v = json!({"generationConfig": {"thinkingConfig": {"thinkingLevel": "medium"}}});

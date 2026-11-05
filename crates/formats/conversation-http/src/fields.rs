@@ -78,9 +78,13 @@ pub fn kept(format: &str, native: &Option<NativeFields>) -> Map<String, Value> {
 /// The fields of a part or a tool that mean the same in another format than
 /// their own, and the formats that take them there: Anthropic's cache
 /// marker, which a client of Chat Completions puts on a part for the Claude
-/// behind it, as LiteLLM and OpenRouter take it. A message has no marker of
-/// its own in Anthropic's format, so a message's is still dropped.
-const SHARED_ON_PARTS: &[(&str, &[&str])] = &[("cache_control", &["anthropic-messages"])];
+/// behind it, as LiteLLM and OpenRouter take it, and OpenAI's explicit cache
+/// breakpoint for a model behind Responses. A message has no marker of its
+/// own in Anthropic's format, so a message's is still dropped.
+const SHARED_ON_PARTS: &[(&str, &[&str])] = &[
+    ("cache_control", &["anthropic-messages"]),
+    ("prompt_cache_breakpoint", &["openai-responses"]),
+];
 
 /// The fields of a part's or a tool's `native` to write in `format`: as
 /// [`kept`] has them, and another format's [`SHARED_ON_PARTS`] with it.

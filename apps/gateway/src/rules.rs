@@ -7,6 +7,8 @@ use respan_gateway_core::Fault;
 use respan_gateway_plugin_fallback::{Backoff, Until};
 use respan_gateway_plugin_routing::{Candidate, Pick, Rule};
 
+use respan_gateway_conversation::Output;
+
 use crate::auth::Client;
 use crate::compose::Upstream;
 use crate::config::{Commit, Config, RouteConfig};
@@ -120,6 +122,7 @@ fn rule(
     rule.backoff = Backoff::new(tries, base, max);
     rule.until = match route.until {
         Commit::Head => Until::Head,
+        Commit::Content => Until::content(Output::shows),
         Commit::End => Until::End,
     };
     Ok(rule)

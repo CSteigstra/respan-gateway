@@ -200,6 +200,19 @@ const USAGE: UsageFields = UsageFields {
     reasoning: true,
 };
 
+/// `reasoning_effort` as the kind's reasoning: its name, or, as LiteLLM takes
+/// it for a model behind Responses, `{"effort": .., "summary": ..}`, whose
+/// summary asks for the thinking back.
+fn read_effort(value: &Value) -> Option<Reasoning> {
+    if let Some(name) = value.as_str() {
+        return parse_effort(name).map(Reasoning::effort);
+    }
+    let effort = parse_effort(value.get("effort")?.as_str()?)?;
+    let mut reasoning = Reasoning::effort(effort);
+    reasoning.summary = value.get("summary").map(|s| s.is_string()).filter(|s| *s);
+    Some(reasoning)
+}
+
 impl Schema for OpenAiChat {
     const NAME: &'static str = OPENAI;
     const PATH: &'static str = "/chat/completions";
@@ -256,9 +269,7 @@ impl Schema for OpenAiChat {
         read_openai_tools(v, &mut chat);
         chat.native = native_fields(OPENAI, std::mem::take(chat.native.fields_mut(OPENAI)));
         read_response_format(v, &mut chat);
-        chat.options.reasoning =
-            take_native(&mut chat, "reasoning_effort", |e| parse_effort(e.as_str()?))
-                .map(Reasoning::effort);
+        chat.options.reasoning = take_native(&mut chat, "reasoning_effort", read_effort);
         chat
     }
 

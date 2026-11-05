@@ -164,7 +164,12 @@ A route's `to` is a candidate or a list: `provider`, `provider/model`, or
 `fastest`, `weighted` or `random`. `needs = ["tools"]` drops models that
 lack a capability, and `when` limits a route to certain client keys or
 kinds. A failed candidate falls back to the next (`tries`, `backoff`), and
-`hedge = "200ms"` races them instead. To see where a model would go and
+`hedge = "200ms"` races them instead. `until` says how far an answer is read
+before it counts as a success, after which nothing is retried: `head`, its
+success status, by default; `content`, the first thing it shows the client,
+so a call that opens and then fails before saying anything, such as a rate
+limit in a stream, still falls back (chat routes only); or `end`, its whole
+answer, which holds the stream back. To see where a model would go and
 why, use `GET /ui/api/routes/explain?model=M`.
 
 ## Pricing

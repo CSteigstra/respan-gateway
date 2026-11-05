@@ -558,6 +558,10 @@ pub enum Commit {
     /// Its head: a success status. The default.
     #[default]
     Head,
+    /// The first thing it shows the client, held until then, so a call that
+    /// opens and then fails before saying anything, such as a rate limit in
+    /// a stream, still falls back. Only for chat routes.
+    Content,
     /// Its whole answer, held until it ends cleanly.
     End,
 }
@@ -1295,6 +1299,11 @@ vendor = "anthropic"
         assert_eq!(smart.tries, Some(2));
         assert_eq!(smart.backoff, Some(Duration::from_millis(100)));
         assert_eq!(smart.until, Commit::End);
+        let content: Config = Config::parse(
+            "providers = { p = { vendor = \"openai\", key = \"k\" } }\nroutes = { r = { to = \"p/m\", until = \"content\" } }\n",
+        )
+        .expect("a config");
+        assert_eq!(content.routes["r"].until, Commit::Content);
         let llama = &config.routes["llama-*"];
         assert_eq!(llama.to[0].target, "groq");
         assert_eq!(llama.hedge, Some(Duration::from_millis(300)));

@@ -263,6 +263,11 @@ impl Schema for GeminiGenerate {
     const NAME: &'static str = GEMINI;
     const PATH: &'static str = "/models/{model}:generateContent";
     const STREAM_FLAG: bool = false;
+    /// How a client of Vertex asks for its Priority PayGo tier.
+    const CARRIED: &'static [&'static str] = &[
+        "x-vertex-ai-llm-request-type",
+        "x-vertex-ai-llm-shared-request-type",
+    ];
     const OWN: &'static [&'static str] = &["generationConfig", "tools", "toolConfig"];
     type Decoding = GeminiDecoder;
 
@@ -314,6 +319,26 @@ impl Schema for GeminiGenerate {
             true => format!("/models/{model}:streamGenerateContent?alt=sse"),
             false => format!("/models/{model}:generateContent"),
         }))
+    }
+
+    /// A schema its own client spelled in Gemini's own subset stays as it
+    /// came: the kind holds JSON Schema, which says the same less exactly,
+    /// such as without its `propertyOrdering`.
+    fn respell(original: &Value, v: &mut Map<String, Value>) {
+        let schema = original.pointer("/generationConfig/responseSchema");
+        let Some((schema, Value::Object(config))) =
+            schema.and_then(|s| v.get_mut("generationConfig").map(|c| (s, c)))
+        else {
+            return;
+        };
+        if config.shift_remove("responseJsonSchema").is_some() {
+            config.insert("responseSchema".into(), schema.clone());
+        }
+    }
+
+    /// Its path names the model, so no one path is its own.
+    fn own_path(uri: &http::Uri) -> bool {
+        call_of(uri).is_some()
     }
 
     /// The streaming method is named in the path.
