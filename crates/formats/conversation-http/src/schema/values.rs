@@ -279,7 +279,9 @@ pub(crate) fn shows(reply: &Output) -> bool {
 pub(crate) fn encode_content<C: Schema>(content: &[Content]) -> Result<Value, Fault> {
     Ok(match content {
         [] => "".into(),
-        [Content::Text { text, native, .. }] if native.fields_for(C::NAME).is_empty() => {
+        [Content::Text { text, native, .. }]
+            if crate::fields::kept_on_part(C::NAME, native).is_empty() =>
+        {
             text.as_str().into()
         }
         parts => parts
@@ -307,7 +309,7 @@ fn encode_any_part<C: Schema>(c: &Content) -> Result<Value, Fault> {
             let mut part = Map::new();
             part.insert("type".into(), "text".into());
             part.insert("text".into(), text.as_str().into());
-            part.extend(native.fields_for(C::NAME));
+            part.extend(crate::fields::kept_on_part(C::NAME, native));
             Ok(part.into())
         }
         Content::Native(NativeValue { format, value, .. }) if **format == *C::NAME => {

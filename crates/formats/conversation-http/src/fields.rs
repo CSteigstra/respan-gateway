@@ -75,6 +75,33 @@ pub fn kept(format: &str, native: &Option<NativeFields>) -> Map<String, Value> {
     }
 }
 
+/// The fields of a part or a tool that mean the same in another format than
+/// their own, and the formats that take them there: Anthropic's cache
+/// marker, which a client of Chat Completions puts on a part for the Claude
+/// behind it, as LiteLLM and OpenRouter take it. A message has no marker of
+/// its own in Anthropic's format, so a message's is still dropped.
+const SHARED_ON_PARTS: &[(&str, &[&str])] = &[("cache_control", &["anthropic-messages"])];
+
+/// The fields of a part's or a tool's `native` to write in `format`: as
+/// [`kept`] has them, and another format's [`SHARED_ON_PARTS`] with it.
+pub fn kept_on_part(format: &str, native: &Option<NativeFields>) -> Map<String, Value> {
+    let Some(n) = native.as_ref().filter(|n| &*n.format != format) else {
+        return kept(format, native);
+    };
+    let shared = |name: &str| {
+        SHARED_ON_PARTS
+            .iter()
+            .any(|(field, formats)| *field == name && formats.contains(&format))
+    };
+    let (carried, dropped): (Map<String, Value>, Map<String, Value>) = n
+        .fields
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .partition(|(k, _)| shared(k));
+    warn_dropped(format, &n.format, dropped.keys().map(String::as_str));
+    carried
+}
+
 /// A 400 for a request whose field `param` `what`, naming it in its
 /// details.
 pub fn invalid(param: &str, what: &str) -> Fault {
@@ -90,6 +117,22 @@ mod tests {
 
     fn object(v: Value) -> Map<String, Value> {
         v.as_object().cloned().unwrap_or_default()
+    }
+
+    #[test]
+    fn a_cache_marker_is_carried_to_anthropic_and_nothing_else() {
+        let marker = json!({"type": "ephemeral"});
+        let native = Some(NativeFields::new(
+            "openai-chat",
+            object(json!({"cache_control": marker, "detail": "high"})),
+        ));
+        assert_eq!(
+            Value::Object(kept_on_part("anthropic-messages", &native)),
+            json!({"cache_control": {"type": "ephemeral"}})
+        );
+        assert!(kept_on_part("openai-responses", &native).is_empty());
+        assert!(kept("anthropic-messages", &native).is_empty());
+        assert_eq!(kept_on_part("openai-chat", &native).len(), 2);
     }
 
     #[test]

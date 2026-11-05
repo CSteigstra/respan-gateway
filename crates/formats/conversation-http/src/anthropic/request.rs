@@ -19,6 +19,7 @@ use serde_json::{Map, Value, json};
 
 use crate::anthropic::output_schema::output_schema;
 use crate::anthropic::{ANTHROPIC, AnthropicMessages};
+use crate::fields::kept_on_part;
 
 /// Anthropic's custom tools and choice, with whether calls may be
 /// parallel, as the kind's.
@@ -88,7 +89,7 @@ pub(crate) fn write_tools(chat: &Input, v: &mut Map<String, Value>) -> Result<()
             false => json!({ "type": "object" }),
         };
         tool.insert("input_schema".into(), schema);
-        tool.extend(t.native.fields_for(ANTHROPIC));
+        tool.extend(kept_on_part(ANTHROPIC, &t.native));
         Value::Object(tool)
     };
     let mut tools: Vec<Value> = chat.tools.iter().map(tool).collect();
@@ -194,7 +195,7 @@ fn write_media(kind: &str, media: &Media) -> Result<Value, Fault> {
     if media.name.is_some() && kind != "document" {
         return Err(untranslatable("a display name on image or audio content"));
     }
-    let native = media.native.fields_for(ANTHROPIC);
+    let native = kept_on_part(ANTHROPIC, &media.native);
     let source = match &media.source {
         MediaSource::Url(url) => json!({"type":"url","url":url}),
         MediaSource::Bytes(bytes) => {
@@ -253,7 +254,7 @@ fn tool_part(block: &Value) -> Option<Content> {
 /// Write the fields of a tool part's `native` into its Anthropic `block`:
 /// another format's are dropped.
 fn block_fields(block: &mut Value, native: &Option<NativeFields>) {
-    let fields = native.fields_for(ANTHROPIC);
+    let fields = kept_on_part(ANTHROPIC, native);
     if let Some(block) = block.as_object_mut() {
         block.extend(fields);
     }

@@ -1882,3 +1882,28 @@ fn a_providers_reasoning_beyond_its_output_stays_within_it() {
     assert_eq!((usage.reasoning_tokens, usage.output_tokens), (76, 76));
     assert!(check_usage(&usage, USAGE).is_ok());
 }
+
+/// A Chat Completions client marks parts for Claude to cache, as LiteLLM
+/// takes them: Anthropic's format keeps each marker where it was put, and
+/// another format drops it.
+#[test]
+fn a_parts_cache_marker_reaches_claude() {
+    let marker = json!({ "type": "ephemeral" });
+    let body = json!({ "model": "m", "messages": [
+        { "role": "system", "content": [{ "type": "text", "text": "rules", "cache_control": marker }] },
+        { "role": "user", "content": [
+            { "type": "text", "text": "read this", "cache_control": marker },
+        ]},
+    ] });
+    let chat = OpenAiChat.decode_json(&body);
+    let sent = AnthropicMessages.encode_request(&chat).map(Value::from);
+    let sent = sent.unwrap_or_default();
+    assert_eq!(
+        sent["system"],
+        json!([{ "type": "text", "text": "rules", "cache_control": marker }])
+    );
+    assert_eq!(sent["messages"][0]["content"][0]["cache_control"], marker);
+    let responses = OpenAiResponses.encode_request(&chat).map(Value::from);
+    let responses = responses.unwrap_or_default();
+    assert!(!responses.to_string().contains("cache_control"));
+}
