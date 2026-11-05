@@ -4,6 +4,8 @@
 //! does to a call and its answer is the HTTP wire's
 //! (`respan_gateway_http::call`), shared with every transport.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -29,6 +31,22 @@ const REDIRECTS: usize = 5;
 /// Whether a redirect to a URI is followed.
 type Allow = dyn Fn(&Uri) -> bool + Send + Sync;
 
+/// A future a [`KeySource`] answers with.
+pub type KeyFuture<'a> = Pin<Box<dyn Future<Output = Result<HeaderMap, Fault>> + Send + 'a>>;
+
+/// Where a transport gets the headers that authenticate each call, when
+/// they are not fixed: a token it mints and refreshes itself, such as a
+/// Google access token from a service account's key, which expires within
+/// the hour.
+pub trait KeySource: Send + Sync + 'static {
+    /// The headers the next call carries, on top of the transport's own.
+    fn headers(&self) -> KeyFuture<'_>;
+
+    /// The provider refused the headers it was last given (401), so any it
+    /// keeps are stale.
+    fn refused(&self) {}
+}
+
 /// Reaches one provider over HTTP(S) at a base URL, which each call's path
 /// extends, sharing one connection pool. It prepares
 /// a call ([`prepare_call`]) and strips the response
@@ -40,6 +58,8 @@ pub struct HttpTransport {
     /// The base URL, without a trailing `/`.
     base: String,
     headers: HeaderMap,
+    /// Where each call's credentials come from, besides `headers`.
+    keys: Option<Arc<dyn KeySource>>,
     follow: Option<Arc<Allow>>,
 }
 
@@ -75,8 +95,14 @@ impl HttpTransport {
             client: client_of(Network::shared())?,
             base: respan_gateway_http::call::base_url(&base_url.into(), &["http", "https"])?,
             headers: HeaderMap::new(),
+            keys: None,
             follow: None,
         })
+    }
+
+    /// Its base URL, without a trailing `/`.
+    pub fn base(&self) -> &str {
+        &self.base
     }
 
     /// Connect through `network`, sharing its transports' client.
@@ -102,6 +128,13 @@ impl HttpTransport {
         Ok(self)
     }
 
+    /// Ask `keys` for the credentials of each call as it is sent, on top of
+    /// its fixed headers, and tell it when the provider refuses them.
+    pub fn with_key_source(mut self, keys: Arc<dyn KeySource>) -> Self {
+        self.keys = Some(keys);
+        self
+    }
+
     /// Follow a redirect of a `GET` or `HEAD` call to a location `allow`
     /// accepts, up to 5 in a row; any other answer is the client's to follow.
     /// A call that leaves its origin leaves its credentials behind: its
@@ -117,7 +150,14 @@ impl HttpTransport {
 
     /// Send an encoded call and return its response.
     pub async fn send(&self, mut call: http::Request<Body>) -> Sent {
-        prepare_call(&mut call, &self.base, &self.headers)?;
+        match &self.keys {
+            Some(keys) => {
+                let mut headers = self.headers.clone();
+                headers.extend(keys.headers().await?);
+                prepare_call(&mut call, &self.base, &headers)?;
+            }
+            None => prepare_call(&mut call, &self.base, &self.headers)?,
+        }
         let (mut parts, body) = call.into_parts();
         let no_body = !body.is_streaming() && body.full_bytes().is_none_or(|b| b.is_empty());
         let reads = matches!(parts.method, Method::GET | Method::HEAD);
@@ -157,6 +197,11 @@ impl HttpTransport {
                 _ => break resp,
             }
         };
+        if resp.status() == StatusCode::UNAUTHORIZED
+            && let Some(keys) = &self.keys
+        {
+            keys.refused();
+        }
         // A plain-HTTP proxy's refusal comes back as an answer.
         if resp.status() == http::StatusCode::PROXY_AUTHENTICATION_REQUIRED {
             return Err(Fault::upstream(

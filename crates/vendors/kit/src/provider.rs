@@ -7,7 +7,7 @@ use crate::{Connect, KeyIn, Models, Reach, Upstream, Vendor};
 use respan_gateway_core::{Fault, Gateway};
 use respan_gateway_http::http::HeaderMap;
 use respan_gateway_http::http::header::{AUTHORIZATION, HeaderName, HeaderValue};
-use respan_gateway_http_transport::{HttpTransport, Network, reqwest, unreachable};
+use respan_gateway_http_transport::{HttpTransport, KeySource, Network, reqwest, unreachable};
 use respan_gateway_ws::{Limits, WsTransport};
 
 /// A provider of a vendor ([`Vendor::provider`]), or of formats of no
@@ -77,6 +77,8 @@ enum Key {
     Own(String),
     /// These headers, as they are.
     Headers(HeaderMap),
+    /// Whatever this mints for each call, such as a Google access token.
+    Source(Arc<dyn KeySource>),
 }
 
 impl std::fmt::Debug for VendorProvider {
@@ -176,6 +178,13 @@ impl VendorProvider {
         self
     }
 
+    /// With the credentials `source` gives each call over HTTP, such as a
+    /// token it mints and refreshes, in place of a key.
+    pub fn key_source(mut self, source: Arc<dyn KeySource>) -> Self {
+        self.key = Key::Source(source);
+        self
+    }
+
     /// Reading up to `bytes` of one answer at once.
     pub fn limit(mut self, bytes: usize) -> Self {
         self.limit = bytes;
@@ -243,16 +252,16 @@ impl VendorProvider {
     /// API over HTTP, with its key as that format takes it.
     pub fn client(&self) -> Result<HttpTransport, Fault> {
         let part = self.api()?;
-        self.keyless_client_at(&part.base_url)?
-            .with_headers(part.headers)
+        let client = self.keyless_client_at(&part.base_url)?;
+        Ok(self.keyed(client.with_headers(part.headers)?))
     }
 
     /// A client of it at `base_url`, such as an API beside the one its
     /// formats are at, with its key as its first format of an API over HTTP
     /// takes it.
     pub fn client_at(&self, base_url: &str) -> Result<HttpTransport, Fault> {
-        self.keyless_client_at(base_url)?
-            .with_headers(self.api()?.headers)
+        let client = self.keyless_client_at(base_url)?;
+        Ok(self.keyed(client.with_headers(self.api()?.headers)?))
     }
 
     /// A client of it at the base URL of its format `format`, if it speaks
@@ -262,7 +271,10 @@ impl VendorProvider {
             .parts()?
             .into_iter()
             .find(|p| p.format.name() == format);
-        let client = |p: Part| self.keyless_client_at(&p.base_url)?.with_headers(p.headers);
+        let client = |p: Part| {
+            let client = self.keyless_client_at(&p.base_url)?;
+            Ok(self.keyed(client.with_headers(p.headers)?))
+        };
         part.map(client).transpose()
     }
 
@@ -287,6 +299,15 @@ impl VendorProvider {
         }
     }
 
+    /// `client` asking its key source, if it has one, for each call's
+    /// credentials.
+    fn keyed(&self, client: HttpTransport) -> HttpTransport {
+        match &self.key {
+            Key::Source(source) => client.with_key_source(source.clone()),
+            _ => client,
+        }
+    }
+
     /// Its first format of an API over HTTP.
     fn api(&self) -> Result<Part, Fault> {
         let part = self.parts()?.into_iter().find(|p| of_api(p.format));
@@ -296,7 +317,7 @@ impl VendorProvider {
     /// The headers its calls of a format that takes the key at `key` carry.
     fn auth(&self, key: KeyIn) -> Result<HeaderMap, Fault> {
         let (name, value) = match (&self.key, key) {
-            (Key::Client, _) => return Ok(HeaderMap::new()),
+            (Key::Client | Key::Source(_), _) => return Ok(HeaderMap::new()),
             (Key::Headers(headers), _) => return Ok(headers.clone()),
             (Key::Own(key), KeyIn::Bearer) => (AUTHORIZATION, format!("Bearer {key}")),
             (Key::Own(key), KeyIn::Header(name)) => (HeaderName::from_static(name), key.clone()),
@@ -317,6 +338,12 @@ impl VendorProvider {
         auth: HeaderMap,
     ) -> Result<Connect, Fault> {
         let follow = match format.reach() {
+            Reach::Session { .. } if matches!(self.key, Key::Source(_)) => {
+                return Err(Fault::config(format!(
+                    "format {} is a session, which takes no minted key",
+                    format.name()
+                )));
+            }
             Reach::Session { binary_text } => {
                 let transport = WsTransport::new(base)?
                     .with_network(&self.network)?
@@ -330,7 +357,7 @@ impl VendorProvider {
         if let Some(follow) = follow {
             client = client.follow_redirects(follow);
         }
-        let client = Arc::new(client.with_headers(auth)?);
+        let client = Arc::new(self.keyed(client.with_headers(auth)?));
         let host = base.split_once("://").map_or(base, |(_, rest)| rest);
         let host = host.split('/').next().unwrap_or_default();
         let who: Arc<str> = format!("provider '{}' at {host}", self.name).into();

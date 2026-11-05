@@ -37,6 +37,7 @@ respan-gateway-decision = { path = "crates/kinds/decision", version = "0.1.0" }
 respan-gateway-http = { path = "crates/wires/http", version = "0.1.1" }
 respan-gateway-http-faults = { path = "crates/wires/http-faults", version = "0.1.0" }
 respan-gateway-http-transport = { path = "crates/wires/http-transport", version = "0.2.0" }
+respan-gateway-google-auth = { path = "crates/wires/google-auth", version = "0.1.0" }
 respan-gateway-plugin-relay = { path = "crates/plugins/relay", version = "0.1.0" }
 respan-gateway-plugin-credentials = { path = "crates/plugins/credentials", version = "0.1.0" }
 respan-gateway-eventstream = { path = "crates/wires/eventstream", version = "0.1.0" }
@@ -80,6 +81,7 @@ memchr = "2"
 moka = { version = "0.12", features = ["sync"] }
 parking_lot = "0.12"
 percent-encoding = "2"
+ring = "0.17"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream", "http2"] }
 serde = { version = "1", features = ["derive"] }
 serde_path_to_error = "0.1"

@@ -11,11 +11,15 @@ from typing import Dict, List, TypedDict, Union
 
 
 class Auth(TypedDict, total=False):
-    """A provider's credentials as one header."""
+    """A provider's credentials as one header, or Google tokens the gateway mints."""
 
-    type: str  # "bearer" or "header"
+    type: str  # "bearer", "header" or "google"
     key: str  # literal or "env:NAME"
     name: str  # the header, for type "header"
+    # For type "google": a credentials file's JSON (service account or authorized_user),
+    # literal, "env:NAME" or "file:PATH"; the token is minted and refreshed in the gateway.
+    credentials: str
+    scope: str  # for type "google"; Cloud Platform's if unset
 
 
 class ProviderConfig(TypedDict, total=False):

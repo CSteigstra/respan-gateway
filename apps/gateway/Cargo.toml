@@ -37,6 +37,7 @@ respan-gateway-conversation-http.workspace = true
 respan-gateway-core.workspace = true
 respan-gateway-http.workspace = true
 respan-gateway-http-transport.workspace = true
+respan-gateway-google-auth.workspace = true
 respan-gateway-mcp.workspace = true
 respan-gateway-mcp-http.workspace = true
 respan-gateway-passthrough-http.workspace = true

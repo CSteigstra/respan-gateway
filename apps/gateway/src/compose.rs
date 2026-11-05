@@ -14,6 +14,7 @@ use crate::auth::Client;
 use crate::config::{Auth, ClientKey, Config, Formats, ProviderConfig};
 use crate::formats::{KnownFormat, kind};
 use crate::vendors;
+use respan_gateway_google_auth::GoogleTokens;
 use respan_gateway_plugin_routing::{Routes, Rule, Speaks};
 use respan_gateway_sdk::{Catalog, Model};
 use respan_gateway_vendors::{Locate, Network, VendorProvider};
@@ -319,7 +320,7 @@ fn upstream(
         Some(vendor) => vendor.provider(name),
         None => VendorProvider::new(name),
     };
-    let mut provider = provider.network(network);
+    let mut provider = provider.network(network.clone());
     let names: Vec<&str> = match (&p.formats, vendor) {
         (Some(formats), _) => formats.names(),
         (None, Some(vendor)) => vendor.formats.iter().map(|(f, _)| f.name()).collect(),
@@ -402,9 +403,15 @@ fn upstream(
             provider = provider.key(secret(&owner, key)?);
             Some(key_source(key))
         }
-        (None, Some(auth), _) => {
+        (None, Some(Auth::Google { credentials, scope }), _) => {
+            let json = google_credentials(&owner, credentials)?;
+            let tokens = GoogleTokens::from_json(&json, scope.as_deref(), &network)
+                .map_err(|e| bad(e.message().into()))?;
+            provider = provider.key_source(tokens.into_source());
+            Some(format!("Google tokens from {}", key_source(credentials)))
+        }
+        (None, Some(auth @ (Auth::Bearer { key } | Auth::Header { key, .. })), _) => {
             provider = provider.headers(auth_headers(name, auth)?);
-            let (Auth::Bearer { key } | Auth::Header { key, .. }) = auth;
             Some(key_source(key))
         }
         (None, None, Some(vendor)) if !vendor.key_env.is_empty() => {
@@ -441,10 +448,23 @@ fn upstream(
 
 /// Where a configured key comes from, for a person to read: never the key.
 pub fn key_source(value: &str) -> String {
-    match value.strip_prefix("env:") {
-        Some(var) => format!("env {var}"),
-        None => "config".to_owned(),
+    match (value.strip_prefix("env:"), value.strip_prefix("file:")) {
+        (Some(var), _) => format!("env {var}"),
+        (_, Some(path)) => format!("file {path}"),
+        _ => "config".to_owned(),
     }
+}
+
+/// Google credentials' JSON: `file:PATH` read, else as [`secret`] reads it.
+fn google_credentials(owner: &str, value: &str) -> Result<String, Fault> {
+    let Some(path) = value.strip_prefix("file:") else {
+        return secret(owner, value);
+    };
+    std::fs::read_to_string(path.trim()).map_err(|e| {
+        Fault::config(format!(
+            "{owner}: the Google credentials file {path} could not be read: {e}"
+        ))
+    })
 }
 
 /// `env:NAME` reads the environment variable; anything else is literal.
@@ -522,6 +542,8 @@ pub fn auth_headers(provider: &str, auth: &Auth) -> Result<HeaderMap, Fault> {
                 .map_err(|e| Fault::config(format!("provider '{provider}': {e}")))?;
             one_header(provider, name, &read(key)?)
         }
+        // Its header is minted for each call.
+        Auth::Google { .. } => Ok(HeaderMap::new()),
     }
 }
 

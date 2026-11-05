@@ -1144,3 +1144,27 @@ async fn fireworks_answers_each_decision_contract_in_its_own() {
     }
     server.abort();
 }
+
+#[test]
+fn google_auth_reads_its_credentials_and_names_none_of_them() {
+    let at = |credentials: &str| {
+        format!(
+            "providers = {{ v = {{ vendor = \"vertex\", base_url = \"https://aiplatform.eu.rep.googleapis.com/v1/projects/p/locations/eu\", auth = {{ type = \"google\", credentials = '{credentials}' }} }} }}\nformats = []\n"
+        )
+    };
+    assert_eq!(
+        resolve(&at(
+            "{\"type\": \"service_account\", \"private_key\": \"secret-ish\""
+        ))
+        .err()
+        .as_deref(),
+        Some("provider 'v': Google credentials: they are not JSON")
+    );
+    assert!(
+        resolve(&at("file:/nonexistent/creds.json"))
+            .err()
+            .is_some_and(|e| e.starts_with("provider 'v': the Google credentials file /nonexistent/creds.json could not be read"))
+    );
+    let user = r#"{"type": "authorized_user", "client_id": "c", "client_secret": "s", "refresh_token": "r"}"#;
+    assert!(resolve(&at(user)).is_ok());
+}

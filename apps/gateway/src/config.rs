@@ -178,6 +178,7 @@ impl std::fmt::Debug for Auth {
         match self {
             Self::Bearer { .. } => f.write_str("Auth::Bearer(..)"),
             Self::Header { name, .. } => write!(f, "Auth::Header({name}: ..)"),
+            Self::Google { .. } => f.write_str("Auth::Google(..)"),
         }
     }
 }
@@ -338,6 +339,15 @@ pub enum Auth {
     Bearer { key: String },
     /// `<name>: <key>`
     Header { name: String, key: String },
+    /// `Authorization: Bearer <token>`, a Google access token minted from
+    /// `credentials` and refreshed before it expires: a credentials file's
+    /// JSON (a service account's key, or `authorized_user`), literal,
+    /// `env:NAME` or `file:PATH`; for `scope`, Cloud Platform's by default.
+    Google {
+        credentials: String,
+        #[serde(default)]
+        scope: Option<String>,
+    },
 }
 
 /// The compiled-in plugins. Each is configured under its own name, and the

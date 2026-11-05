@@ -16,8 +16,8 @@
 //! is the spec's, in its format.
 
 pub use respan_gateway_vendor_kit::{
-    Body, BoxFuture, Capability, Connect, FORMATS, HttpTransport, KeyIn, ListModels, Locate,
-    Modality, Model, Models, Network, Part, Price, Reach, Upstream, Vendor, VendorProvider,
+    Body, BoxFuture, Capability, Connect, FORMATS, HttpTransport, KeyIn, KeySource, ListModels,
+    Locate, Modality, Model, Models, Network, Part, Price, Reach, Upstream, Vendor, VendorProvider,
     built_wrong, chat, format, http, json, located, models, time,
 };
 
