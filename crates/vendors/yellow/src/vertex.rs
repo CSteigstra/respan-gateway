@@ -3,7 +3,7 @@
 //! model's endpoint too. And its express mode ([`EXPRESS`]): Gemini's
 //! `generateContent` under no project, with an API key.
 
-use respan_gateway_conversation::{Content, Input, Output};
+use respan_gateway_conversation::{Content, Effort, Input, Output, Reasoning};
 use respan_gateway_conversation_http::Schema;
 use respan_gateway_conversation_http::anthropic::AnthropicMessages;
 use respan_gateway_conversation_http::gemini::GeminiGenerate;
@@ -118,7 +118,10 @@ impl Dialect for Vertex {
     }
 
     fn inputs(&self) -> Option<Box<dyn respan_gateway_core::Filter<Input>>> {
-        Some(Box::new(unnamed))
+        Some(Box::new(|input: &mut Input| {
+            unnamed(input);
+            budgeted(input)
+        }))
     }
 
     fn request(&self, head: &mut RequestHead, _: Option<&Bytes>) -> Result<Option<Rewrite>, Fault> {
@@ -145,12 +148,60 @@ fn tuned(model: &str) -> bool {
 
 /// `input` with no file name on its media, which Vertex's Gemini refuses
 /// to be told and Gemini's format cannot leave out by itself.
-fn unnamed(input: &mut Input) -> Result<(), Fault> {
+fn unnamed(input: &mut Input) {
     for content in input.messages.iter_mut().flat_map(|m| m.content.iter_mut()) {
         if let Content::Image(media) | Content::Audio(media) | Content::Document(media) = content {
             media.name = None;
         }
     }
+}
+
+/// The field a client of another format, which has no thinking budget of its
+/// own, names one in, such as Chat Completions' `extra_body`.
+const THINKING_BUDGET: &str = "thinking_budget";
+
+/// The thinking budget per effort of a tuned model, as Gemini's format has
+/// them for Gemini 2.5, whose tuned models refuse a thinking level. `Off` is
+/// a budget of 0, which the format writes itself.
+fn tuned_budget(effort: Effort) -> Option<u64> {
+    match effort {
+        Effort::Off => None,
+        Effort::Minimal => Some(1),
+        Effort::Low => Some(1024),
+        Effort::Medium => Some(2048),
+        _ => Some(4096),
+    }
+}
+
+/// `input`'s thinking in the budget its client named, exact, whatever the
+/// model; and, for a tuned model, in the budget of the effort its client
+/// named, as such a model takes no level. Its thoughts are asked for as they
+/// are for an effort a client names.
+fn budgeted(input: &mut Input) -> Result<(), Fault> {
+    let named = input
+        .native
+        .as_mut()
+        .and_then(|n| n.fields.shift_remove(THINKING_BUDGET));
+    if let Some(named) = named {
+        let tokens = named.as_u64().ok_or_else(|| {
+            Fault::bad_request(format!("'{THINKING_BUDGET}' is a number of tokens"))
+        })?;
+        input.options.reasoning = Some(match tokens {
+            0 => Reasoning::effort(Effort::Off),
+            tokens => Reasoning::budget(tokens),
+        });
+    } else if !input.model.as_deref().is_some_and(tuned) {
+        return Ok(());
+    }
+    let Some(reasoning) = input.options.reasoning.as_mut() else {
+        return Ok(());
+    };
+    if let Some(budget) = reasoning.effort.and_then(tuned_budget) {
+        reasoning.effort = None;
+        reasoning.budget_tokens = Some(budget);
+    }
+    let thinks = reasoning.effort != Some(Effort::Off);
+    reasoning.summary.get_or_insert(thinks);
     Ok(())
 }
 
@@ -305,9 +356,9 @@ mod tests {
             call.uri,
             "/publishers/google/models/gemini-3.8-flash:streamGenerateContent?alt=sse"
         );
-        let mut call = head("/models/8672342988501811200:generateContent");
+        let mut call = head("/models/1234567890123456789:generateContent");
         Vertex.request(&mut call, None).expect("a path");
-        assert_eq!(call.uri, "/endpoints/8672342988501811200:generateContent");
+        assert_eq!(call.uri, "/endpoints/1234567890123456789:generateContent");
     }
 
     #[test]
@@ -351,6 +402,71 @@ mod tests {
         );
     }
 
+    /// The thinking `input` is left with, its model and client's fields given.
+    fn thinking(
+        model: &str,
+        reasoning: Option<Reasoning>,
+        budget: Option<Value>,
+    ) -> Result<Option<Reasoning>, Fault> {
+        let mut input = Input::default();
+        input.model = Some(model.to_owned());
+        input.options.reasoning = reasoning;
+        if let Some(budget) = budget {
+            let mut fields = Map::new();
+            fields.insert(THINKING_BUDGET.to_owned(), budget);
+            input.native = Some(respan_gateway_core::NativeFields::new(
+                "openai-chat",
+                fields,
+            ));
+        }
+        budgeted(&mut input)?;
+        assert!(
+            input
+                .native
+                .is_none_or(|n| !n.fields.contains_key(THINKING_BUDGET))
+        );
+        Ok(input.options.reasoning)
+    }
+
+    #[test]
+    fn a_tuned_model_takes_an_effort_as_a_budget_and_another_model_keeps_it() {
+        let tuned_model = "1234567890123456789";
+        let low = Reasoning::effort(Effort::Low);
+        let got = thinking(tuned_model, Some(low.clone()), None).expect("thinking");
+        let mut want = Reasoning::budget(1024);
+        want.summary = Some(true);
+        assert_eq!(got, Some(want));
+        let off =
+            thinking(tuned_model, Some(Reasoning::effort(Effort::Off)), None).expect("thinking");
+        let off = off.expect("thinking");
+        assert_eq!(
+            (off.effort, off.budget_tokens, off.summary),
+            (Some(Effort::Off), None, Some(false))
+        );
+        assert_eq!(
+            thinking("gemini-3.8-flash", Some(low.clone()), None).expect("thinking"),
+            Some(low)
+        );
+        assert_eq!(thinking(tuned_model, None, None).expect("thinking"), None);
+    }
+
+    #[test]
+    fn a_named_budget_is_exact_on_any_model_and_must_be_a_number() {
+        let mut want = Reasoning::budget(1500);
+        want.summary = Some(true);
+        for model in ["1234567890123456789", "gemini-2.5-flash"] {
+            let got = thinking(
+                model,
+                Some(Reasoning::effort(Effort::Low)),
+                Some(json!(1500)),
+            );
+            assert_eq!(got.expect("thinking"), Some(want.clone()), "{model}");
+        }
+        let off = thinking("1234567890123456789", None, Some(json!(0))).expect("thinking");
+        assert_eq!(off.and_then(|r| r.effort), Some(Effort::Off));
+        assert!(thinking("gemini-2.5-flash", None, Some(json!("lots"))).is_err());
+    }
+
     #[test]
     fn claude_goes_to_messages_and_gemini_to_generate_content() {
         let ask = Ask {
@@ -363,7 +479,7 @@ mod tests {
         let format = |id: &str| format_for(&ask, &Model::new(id));
         assert_eq!(format("claude-haiku-5-5"), Some(AnthropicMessages::NAME));
         assert_eq!(format("gemini-3.8-flash"), Some(GeminiGenerate::NAME));
-        assert_eq!(format("8672342988501811200"), Some(GeminiGenerate::NAME));
+        assert_eq!(format("1234567890123456789"), Some(GeminiGenerate::NAME));
     }
 
     #[test]

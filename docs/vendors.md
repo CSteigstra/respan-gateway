@@ -99,7 +99,12 @@ at `https://aiplatform.googleapis.com/..` for the `global` location and at
 `https://aiplatform.{eu,us}.rep.googleapis.com/..` for the `eu` and `us`
 multi-regions. Gemini goes to `gemini-generate` under
 `/publishers/google/models/<model>`, and a tuned model, named by its
-endpoint's id (all digits), to `/endpoints/<id>`. Claude (`claude-…`) goes
+endpoint's id (all digits), to `/endpoints/<id>`. A tuned model refuses a
+thinking level, so an effort reaches it as a budget (low 1024, medium 2048,
+high 4096); a client of Chat Completions may name an exact budget on any
+model in `extra_body = { thinking_budget = 1500 }`. A client of Google's SDK
+may send its `/endpoints/<id>` path as it is; give the id a route to the
+provider at that endpoint's location, or it goes to the default provider. Claude (`claude-…`) goes
 to `anthropic-messages` through `/publishers/anthropic/models/<model>:rawPredict`
 (`:streamRawPredict` for a stream), the model in the path and
 `anthropic_version` in the body, whatever format the client speaks. Vertex

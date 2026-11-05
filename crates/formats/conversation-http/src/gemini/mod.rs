@@ -152,13 +152,15 @@ fn finish_of(reason: &str) -> Finish {
 }
 
 /// The model, unescaped, and the method a Gemini path names:
-/// `.../models/{model}:{method}`, `generateContent` or
+/// `.../models/{model}:{method}`, or `.../endpoints/{id}:{method}` as Vertex
+/// names a tuned model's endpoint, the method `generateContent` or
 /// `streamGenerateContent`.
 pub fn call_of(uri: &http::Uri) -> Option<(String, &str)> {
     let path = uri.path();
     let (rest, last) = path.rsplit_once('/')?;
     let (model, method) = last.rsplit_once(':')?;
-    let named = rest.rsplit('/').next() == Some("models") && !model.is_empty();
+    let parent = rest.rsplit('/').next();
+    let named = matches!(parent, Some("models" | "endpoints")) && !model.is_empty();
     let known = matches!(method, "generateContent" | "streamGenerateContent");
     let unescaped = || percent_encoding::percent_decode_str(model).decode_utf8_lossy();
     (named && known).then(|| (unescaped().into_owned(), method))
@@ -171,7 +173,8 @@ pub fn sse(uri: &http::Uri) -> bool {
 }
 
 /// Google Gemini's `generateContent`, named `gemini-generate`: a `POST` to a
-/// path `.../models/{model}:generateContent` or `:streamGenerateContent`.
+/// path `.../models/{model}:generateContent` or `:streamGenerateContent`, or
+/// the same methods at `.../endpoints/{id}`.
 /// The provider's base URL includes the version, such as
 /// `https://generativelanguage.googleapis.com/v1beta`, and its transport the
 /// key (`x-goog-api-key`).

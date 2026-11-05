@@ -800,9 +800,9 @@ fn gemini_version(model: &str) -> Option<u32> {
 
 /// A call whose `thinkingConfig` is an effort the kind wrote, its level or
 /// a budget of 0 for none, as a client of another format names it: on
-/// Gemini 3 and later, the level the model has for it (the flash line has
-/// `minimal` and `medium`, Gemini 3.1 Pro `medium`; others round to `low` or
-/// `high`, and none is the least level without thoughts); on Gemini 2.5 a
+/// Gemini 3 and later, the level the model has for it (Gemini 3 and 3.1
+/// Flash have `minimal`, every Flash but Flash-Lite and Gemini 3.1 Pro `medium`; others
+/// round to `low` or `high`, and none is the least level without thoughts); on Gemini 2.5 a
 /// thinking budget for it (none is 0); before 2.5, which does not think,
 /// none. Thoughts are included but for none.
 pub(crate) fn effort_thinking(model: &str, v: &mut Map<String, Value>) {
@@ -831,7 +831,8 @@ pub(crate) fn effort_thinking(model: &str, v: &mut Map<String, Value>) {
         thinking.shift_remove("thinkingBudget");
     } else if version >= 3 {
         let flash = model.contains("gemini-3-flash") || model.contains("gemini-3.1-flash");
-        let medium = flash || model.contains("gemini-3.1-pro-preview");
+        let full_flash = model.contains("flash") && !model.contains("flash-lite");
+        let medium = full_flash || model.contains("gemini-3.1-pro-preview");
         let floor = if flash { "minimal" } else { "low" };
         let level = match effort.as_str() {
             "minimal" | "none" => floor,

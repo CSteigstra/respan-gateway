@@ -94,6 +94,37 @@ fn a_path_names_the_model_and_the_method() {
 }
 
 #[test]
+fn every_flash_keeps_a_medium_effort() {
+    let level = |model: &str| {
+        let mut v = json!({"generationConfig": {"thinkingConfig": {"thinkingLevel": "medium"}}});
+        let body = v.as_object_mut().expect("an object");
+        super::request::effort_thinking(model, body);
+        v["generationConfig"]["thinkingConfig"]["thinkingLevel"].clone()
+    };
+    for model in ["gemini-3-flash", "gemini-3.6-flash", "gemini-3.8-flash"] {
+        assert_eq!(level(model), "medium", "{model}");
+    }
+    assert_eq!(level("gemini-3-pro"), "high");
+}
+
+#[test]
+fn a_vertex_endpoints_path_names_its_id_as_the_model() {
+    let call = |p: &str| call_of(&p.parse().expect("a URI")).map(|(m, c)| (m, c.to_owned()));
+    assert_eq!(
+        call("/v1beta1/projects/p/locations/l/endpoints/123:streamGenerateContent"),
+        Some(("123".into(), "streamGenerateContent".into()))
+    );
+    assert_eq!(
+        call("/v1/projects/p/locations/l/endpoints:generateContent"),
+        None
+    );
+    assert_eq!(
+        call("/v1/projects/p/locations/l/endpoints/123:predict"),
+        None
+    );
+}
+
+#[test]
 fn a_call_is_posted_to_the_path_of_its_model_and_method() {
     let mut chat = Input::default();
     chat.model = Some("models/gemini-2.5-flash".into());
