@@ -49,7 +49,7 @@ Each vendor is in one of two tiers:
 | <img src="assets/vendors/cerebras.svg" width="20" height="20" alt=""> | Cerebras | `cerebras` | `CEREBRAS_API_KEY` | `openai-chat` |
 | <img src="assets/vendors/perplexity.svg" width="20" height="20" alt=""> | Perplexity | `perplexity` | `PERPLEXITY_API_KEY` | `openai-responses` |
 | <img src="assets/vendors/empiriolabs.png" width="20" height="20" alt=""> | EmpirioLabs AI | `empiriolabs` | `EMPIRIOLABS_API_KEY` | `openai-chat`, `openai-responses`, `anthropic-messages`, `gemini-generate`, `openai-images`, `openai-embeddings`, `openai-speech`, `decisions` |
-| <img src="assets/vendors/gemini.svg" width="20" height="20" alt=""> | Google Vertex AI | `vertex` | `GOOGLE_VERTEX_ACCESS_TOKEN` or `CLOUDSDK_AUTH_ACCESS_TOKEN` | `gemini-generate` |
+| <img src="assets/vendors/gemini.svg" width="20" height="20" alt=""> | Google Vertex AI | `vertex` | `auth = { type = "google", credentials = .. }`, or a token in `GOOGLE_VERTEX_ACCESS_TOKEN` or `CLOUDSDK_AUTH_ACCESS_TOKEN` | `gemini-generate`, `anthropic-messages` |
 | <img src="assets/vendors/gemini.svg" width="20" height="20" alt=""> | Vertex AI express mode | `vertex-express` | `GOOGLE_VERTEX_API_KEY` | `gemini-generate` |
 | <img src="assets/vendors/deepinfra.svg" width="20" height="20" alt=""> | DeepInfra | `deepinfra` | `DEEPINFRA_API_KEY` | `openai-chat`, `openai-images`, `openai-embeddings`, `openai-speech`, `openai-transcriptions`, `openai-videos` |
 
@@ -93,15 +93,29 @@ AWS's [`aws-sigv4-proxy`](https://github.com/awslabs/aws-sigv4-proxy) with
 with no key. Its models are then not listed, as the proxy reaches only the
 runtime.
 
-Vertex AI's `gemini-generate` is under a project's location, at
-`https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/publishers/google`
-(`https://aiplatform.googleapis.com/..` for the `global` location), with a
-Google access token as the bearer key. Its models are Google's list
-(`/v1beta1/publishers/google/models`) of those it serves with no
-deployment of one's own; the list says no kind, limits or prices. The key
-expires within the hour: the gateway sends the one it is given, so whoever
-runs it gives it a fresh one, such as `gcloud auth print-access-token`
-prints, in a config file it reloads. Express mode, `vertex-express`, takes
+Vertex AI's formats are under a project's location, its base URL:
+`https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}`,
+at `https://aiplatform.googleapis.com/..` for the `global` location and at
+`https://aiplatform.{eu,us}.rep.googleapis.com/..` for the `eu` and `us`
+multi-regions. Gemini goes to `gemini-generate` under
+`/publishers/google/models/<model>`, and a tuned model, named by its
+endpoint's id (all digits), to `/endpoints/<id>`. Claude (`claude-…`) goes
+to `anthropic-messages` through `/publishers/anthropic/models/<model>:rawPredict`
+(`:streamRawPredict` for a stream), the model in the path and
+`anthropic_version` in the body, whatever format the client speaks. Vertex
+takes no display name on media, so a file's name is left out. Its models
+are Google's list (`/v1beta1/publishers/google/models`) of those it serves
+with no deployment of one's own; the list says no kind, limits or prices.
+
+The key is a Google access token, which expires within the hour. Given
+`auth = { type = "google", credentials = "env:GOOGLE_CREDENTIALS_JSON" }`
+(a credentials file's JSON, literal, `env:NAME` or `file:PATH`: a service
+account's key, or `authorized_user` as `gcloud auth application-default
+login` writes it), the gateway mints the token itself, keeps it until five
+minutes before it expires or until Vertex refuses it (401), and mints
+another, in-process as in a server. A token given as the key is sent as it
+is, so whoever runs the gateway refreshes it, in a config file it reloads.
+Express mode, `vertex-express`, takes
 an API key that does not expire, in `x-goog-api-key`, for
 `gemini-generate` at `https://aiplatform.googleapis.com/v1/publishers/google`,
 under no project; it lists no models.

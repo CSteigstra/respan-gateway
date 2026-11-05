@@ -1,26 +1,27 @@
-//! Google Vertex AI: Gemini's `generateContent` at a project and location,
-//! with a Google access token. And its express mode ([`EXPRESS`]): Gemini's
+//! Google Vertex AI: Gemini's `generateContent` and Claude's Messages at a
+//! project and location, with a Google access token; Gemini at a tuned
+//! model's endpoint too. And its express mode ([`EXPRESS`]): Gemini's
 //! `generateContent` under no project, with an API key.
 
-use respan_gateway_conversation::{Input, Output};
+use respan_gateway_conversation::{Content, Input, Output};
 use respan_gateway_conversation_http::Schema;
+use respan_gateway_conversation_http::anthropic::AnthropicMessages;
 use respan_gateway_conversation_http::gemini::GeminiGenerate;
-use serde_json::Value;
+use respan_gateway_core::Fault;
+use respan_gateway_http::bytes::Bytes;
+use respan_gateway_http::http::request::Parts as RequestHead;
+use respan_gateway_http::path::set_path;
+use serde_json::{Map, Value};
 
 use respan_gateway_vendor_kit::{
-    Body, BoxFuture, Dialect, Dialected, KeyIn, Model, Models, Vendor, VendorProvider, built_wrong,
-    http, json as body_json, located, models,
+    Ask, Body, BoxFuture, Dialect, Dialected, KeyIn, Model, Models, Rewrite, Vendor,
+    VendorProvider, built_wrong, http, json as body_json, located, models,
 };
 
-/// A project's location, under which each of its APIs is.
-macro_rules! location {
-    () => {
-        "https://{GOOGLE_CLOUD_LOCATION}-aiplatform.googleapis.com/v1/projects/{GOOGLE_CLOUD_PROJECT}/locations/{GOOGLE_CLOUD_LOCATION}"
-    };
-}
-
-/// Google's models, in Gemini's own API.
-const API: &str = concat!(location!(), "/publishers/google");
+/// A project's location, under which each of its APIs is: Google's models
+/// under `/publishers/google`, Claude under `/publishers/anthropic`, a
+/// tuned model at `/endpoints/<id>`.
+const LOCATION: &str = "https://{GOOGLE_CLOUD_LOCATION}-aiplatform.googleapis.com/v1/projects/{GOOGLE_CLOUD_PROJECT}/locations/{GOOGLE_CLOUD_LOCATION}";
 
 /// Where express mode's Gemini is: under no project, at the global host.
 const EXPRESS_API: &str = "https://aiplatform.googleapis.com/v1/publishers/google";
@@ -29,17 +30,32 @@ const EXPRESS_API: &str = "https://aiplatform.googleapis.com/v1/publishers/googl
 /// 300 at a time.
 const MODELS: &str = "/v1beta1/publishers/google/models?pageSize=300";
 
-/// Google Vertex AI. The key is a Google access token, such as `gcloud
-/// auth print-access-token` prints, which expires within the hour: the
-/// gateway sends the one it is given, so the host gives it a fresh one.
-/// The `global` location is at the host of no region.
+/// The Messages version Vertex's Claude takes in the body, as it takes no
+/// `anthropic-version` header.
+const ANTHROPIC_VERSION: &str = "vertex-2023-10-16";
+
+/// Google Vertex AI, at a project's location (its base URL, such as
+/// `https://aiplatform.eu.rep.googleapis.com/v1/projects/<p>/locations/eu`).
+/// Gemini goes to `generateContent`, Claude to Messages through
+/// `rawPredict`, whatever the client speaks. The key is a Google access
+/// token, which expires within the hour: give the provider `auth = { type =
+/// "google", credentials = ".." }` and the gateway mints and refreshes it
+/// from a service account's key; a token in `GOOGLE_VERTEX_ACCESS_TOKEN`
+/// is sent as it is. The `global` location is at the host of no region, the
+/// `eu` and `us` multi-regions at their own (`aiplatform.eu.rep..`).
 pub const VENDOR: Vendor = Vendor {
     id: "vertex",
     key_env: &["GOOGLE_VERTEX_ACCESS_TOKEN", "CLOUDSDK_AUTH_ACCESS_TOKEN"],
-    formats: &[(&Dialected::new(GeminiGenerate, Vertex), Some(API))],
+    formats: &[
+        (&Dialected::new(GeminiGenerate, Vertex), Some(LOCATION)),
+        (
+            &Dialected::new(AnthropicMessages, VertexClaude),
+            Some(LOCATION),
+        ),
+    ],
     models: list_models,
+    format_for: Some(format_for),
     locate,
-    ..Vendor::DEFAULT
 };
 
 /// Vertex AI in express mode: Gemini's `generateContent` under no project,
@@ -54,19 +70,42 @@ pub const EXPRESS: Vendor = Vendor {
     ..Vendor::DEFAULT
 };
 
-/// `url` located, its `global` location at the host of no region,
-/// `aiplatform.googleapis.com`, as Google has it: no host is
-/// `global-aiplatform.googleapis.com`.
+/// `url` located, at the host Google gives its location: the `global`
+/// location at the host of no region, `aiplatform.googleapis.com`, and a
+/// multi-region (`eu`, `us`) at `aiplatform.<it>.rep.googleapis.com`. No
+/// host is `global-aiplatform..`, and `eu-aiplatform..` answers 404.
 fn locate(url: &str) -> Result<String, &str> {
     let url = located(url)?;
-    Ok(match url.strip_prefix("https://global-aiplatform.") {
-        Some(rest) => format!("https://aiplatform.{rest}"),
-        None => url,
+    if let Some(rest) = url.strip_prefix("https://global-aiplatform.") {
+        return Ok(format!("https://aiplatform.{rest}"));
+    }
+    for region in ["eu", "us"] {
+        let multi = format!("https://{region}-aiplatform.googleapis.com/");
+        if let Some(rest) = url.strip_prefix(&multi) {
+            return Ok(format!(
+                "https://aiplatform.{region}.rep.googleapis.com/{rest}"
+            ));
+        }
+    }
+    Ok(url)
+}
+
+/// Claude (`claude-…`) goes to Messages, whatever the client speaks; any
+/// other model to `generateContent`.
+fn format_for(ask: &Ask, model: &Model) -> Option<&'static str> {
+    if ask.kind != "chat" {
+        return None;
+    }
+    Some(match model.id.starts_with("claude") {
+        true => AnthropicMessages::NAME,
+        false => GeminiGenerate::NAME,
     })
 }
 
 /// Vertex's `generateContent`: its key a bearer token, not Gemini's
-/// `x-goog-api-key`.
+/// `x-goog-api-key`; Google's models under `/publishers/google`, and a
+/// tuned model, named by its endpoint's id (all digits), at that endpoint.
+/// Vertex takes no display name on media, so a file's name is left out.
 #[derive(Debug, Clone, Copy)]
 pub struct Vertex;
 
@@ -77,6 +116,101 @@ impl Dialect for Vertex {
     fn key(&self) -> Option<KeyIn> {
         Some(KeyIn::Bearer)
     }
+
+    fn inputs(&self) -> Option<Box<dyn respan_gateway_core::Filter<Input>>> {
+        Some(Box::new(unnamed))
+    }
+
+    fn request(&self, head: &mut RequestHead, _: Option<&Bytes>) -> Result<Option<Rewrite>, Fault> {
+        let path = head.uri.path().to_owned();
+        let call = path
+            .strip_prefix("/models/")
+            .and_then(|c| c.split_once(':'));
+        let Some((model, method)) = call else {
+            return Ok(None);
+        };
+        let at = match tuned(model) {
+            true => format!("/endpoints/{model}:{method}"),
+            false => format!("/publishers/google/models/{model}:{method}"),
+        };
+        set_path(head, &at)?;
+        Ok(None)
+    }
+}
+
+/// Whether `model` names a tuned model's endpoint: its id, all digits.
+fn tuned(model: &str) -> bool {
+    !model.is_empty() && model.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// `input` with no file name on its media, which Vertex's Gemini refuses
+/// to be told and Gemini's format cannot leave out by itself.
+fn unnamed(input: &mut Input) -> Result<(), Fault> {
+    for content in input.messages.iter_mut().flat_map(|m| m.content.iter_mut()) {
+        if let Content::Image(media) | Content::Audio(media) | Content::Document(media) = content {
+            media.name = None;
+        }
+    }
+    Ok(())
+}
+
+/// Claude's Messages as Vertex serves them: the model in the path, not the
+/// body (`/publishers/anthropic/models/<model>:rawPredict`, or
+/// `:streamRawPredict` for a stream), and the API's version in the body.
+#[derive(Debug, Clone, Copy)]
+pub struct VertexClaude;
+
+impl Dialect for VertexClaude {
+    type Input = Input;
+    type Output = Output;
+
+    fn key(&self) -> Option<KeyIn> {
+        Some(KeyIn::Bearer)
+    }
+
+    fn request(
+        &self,
+        head: &mut RequestHead,
+        body: Option<&Bytes>,
+    ) -> Result<Option<Rewrite>, Fault> {
+        let body = body.ok_or_else(|| Fault::internal("a Messages call has a whole body"))?;
+        let call: Map<String, Value> = serde_json::from_slice(body)
+            .map_err(|e| Fault::internal("a Messages call is not JSON").with_source(e))?;
+        let model = call
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !claude_id(model) {
+            return Err(Fault::bad_request(
+                "a Claude call on Vertex needs a model, such as claude-haiku-4-5@20251001",
+            ));
+        }
+        let method = match call.get("stream") == Some(&Value::Bool(true)) {
+            true => "streamRawPredict",
+            false => "rawPredict",
+        };
+        set_path(
+            head,
+            &format!("/publishers/anthropic/models/{model}:{method}"),
+        )?;
+        head.headers.remove("anthropic-version");
+        Ok(Some(Box::new(move |_| {
+            let mut call = call;
+            call.remove("model");
+            call.entry("anthropic_version")
+                .or_insert_with(|| ANTHROPIC_VERSION.into());
+            serde_json::to_vec(&call)
+                .map(Bytes::from)
+                .map_err(|e| Fault::internal("a Messages call could not be written").with_source(e))
+        })))
+    }
+}
+
+/// Whether `model` is a Vertex model id that is one path segment as it is:
+/// letters, digits, `-`, `.`, `_` and the `@` before a version.
+fn claude_id(model: &str) -> bool {
+    let ok = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'@');
+    !model.is_empty() && model.bytes().all(ok)
 }
 
 /// Its models: Google's list ([`MODELS`]) at its API's origin (its base
@@ -140,6 +274,96 @@ mod tests {
         );
         let regional = "https://us-east5-aiplatform.googleapis.com/v1";
         assert_eq!(locate(regional).as_deref(), Ok(regional));
+    }
+
+    #[test]
+    fn a_multi_region_is_at_its_own_host() {
+        let url = "https://eu-aiplatform.googleapis.com/v1/projects/p/locations/eu";
+        assert_eq!(
+            locate(url).as_deref(),
+            Ok("https://aiplatform.eu.rep.googleapis.com/v1/projects/p/locations/eu")
+        );
+        let us = "https://us-aiplatform.googleapis.com/v1/projects/p/locations/us";
+        assert!(
+            locate(us).is_ok_and(|u| u.starts_with("https://aiplatform.us.rep.googleapis.com/"))
+        );
+        // A region that starts like one is its own.
+        let west = "https://europe-west4-aiplatform.googleapis.com/v1";
+        assert_eq!(locate(west).as_deref(), Ok(west));
+    }
+
+    fn head(uri: &'static str) -> RequestHead {
+        let call = http::Request::post(uri).body(()).expect("a call");
+        call.into_parts().0
+    }
+
+    #[test]
+    fn gemini_is_under_google_and_a_tuned_model_at_its_endpoint() {
+        let mut call = head("/models/gemini-3.8-flash:streamGenerateContent?alt=sse");
+        Vertex.request(&mut call, None).expect("a path");
+        assert_eq!(
+            call.uri,
+            "/publishers/google/models/gemini-3.8-flash:streamGenerateContent?alt=sse"
+        );
+        let mut call = head("/models/8672342988501811200:generateContent");
+        Vertex.request(&mut call, None).expect("a path");
+        assert_eq!(call.uri, "/endpoints/8672342988501811200:generateContent");
+    }
+
+    #[test]
+    fn claude_is_named_in_the_path_and_versioned_in_the_body() {
+        let body = Bytes::from_static(
+            br#"{"model":"claude-haiku-5-5@20261001","max_tokens":8,"stream":true,"messages":[]}"#,
+        );
+        let mut call = head("/v1/messages");
+        call.headers.insert(
+            "anthropic-version",
+            http::HeaderValue::from_static("2023-06-01"),
+        );
+        let rewrite = VertexClaude
+            .request(&mut call, Some(&body))
+            .expect("a path")
+            .expect("a rewrite");
+        assert_eq!(
+            call.uri,
+            "/publishers/anthropic/models/claude-haiku-5-5@20261001:streamRawPredict"
+        );
+        assert!(!call.headers.contains_key("anthropic-version"));
+        let sent: Value = serde_json::from_slice(&rewrite(body).expect("a body")).expect("JSON");
+        assert_eq!(
+            sent,
+            json!({"max_tokens": 8, "stream": true, "messages": [], "anthropic_version": ANTHROPIC_VERSION})
+        );
+        let unary = Bytes::from_static(br#"{"model":"claude-sonnet-5-5","messages":[]}"#);
+        let mut call = head("/v1/messages");
+        VertexClaude
+            .request(&mut call, Some(&unary))
+            .expect("a path");
+        assert_eq!(
+            call.uri,
+            "/publishers/anthropic/models/claude-sonnet-5-5:rawPredict"
+        );
+        let odd = Bytes::from_static(br#"{"model":"../x","messages":[]}"#);
+        assert!(
+            VertexClaude
+                .request(&mut head("/v1/messages"), Some(&odd))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn claude_goes_to_messages_and_gemini_to_generate_content() {
+        let ask = Ask {
+            kind: "chat",
+            format: "openai-chat",
+            model: None,
+            client: None,
+            tools: false,
+        };
+        let format = |id: &str| format_for(&ask, &Model::new(id));
+        assert_eq!(format("claude-haiku-5-5"), Some(AnthropicMessages::NAME));
+        assert_eq!(format("gemini-3.8-flash"), Some(GeminiGenerate::NAME));
+        assert_eq!(format("8672342988501811200"), Some(GeminiGenerate::NAME));
     }
 
     #[test]

@@ -50,6 +50,11 @@ key    = "env:ANTHROPIC_API_KEY"
 # vendor = "gemini"
 # key    = "env:GEMINI_API_KEY"
 
+# [providers.vertex]               # Gemini and Claude on Vertex AI's eu multi-region
+# vendor   = "vertex"              # a token minted from a service account's key
+# base_url = "https://aiplatform.eu.rep.googleapis.com/v1/projects/my-project/locations/eu"
+# auth     = { type = "google", credentials = "env:GOOGLE_CREDENTIALS_JSON" }
+
 # [providers.groq]                 # also: deepseek, openrouter, xai, mistral,
 # vendor = "groq"                  # together, fireworks, azure, cloudflare, ...
 # key    = "env:GROQ_API_KEY"
