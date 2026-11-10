@@ -188,11 +188,19 @@ pub(super) struct Slot {
 }
 
 /// Writes events as Gemini's stream: a response for each delta of text, one
-/// for each tool call once it ends, and the last with the finish and usage.
+/// for each tool call once it ends, and the finish and usage on the last.
+///
+/// Like Gemini, the last delta of text carries the finish and usage: each is
+/// written once the next event that writes comes, and the last waits for the
+/// end. A client that stops reading once it has all the text then still has
+/// the usage. When a tool call or nothing is last, the finish is a response
+/// of its own.
 #[derive(Debug, Default)]
 pub(super) struct EventStream {
     start: Option<Start>,
     began: bool,
+    /// The parts of the last delta of text, not yet written.
+    held: Option<Vec<Value>>,
     usage: Usage,
     finish: Option<Finish>,
     fields: ResponseFields,
@@ -253,9 +261,27 @@ impl EventStream {
         Ok(Value::Object(v))
     }
 
+    /// Writes a response of `parts`, after the delta held back.
     fn emit(&mut self, parts: Vec<Value>, out: &mut BytesMut) -> Result<(), Fault> {
+        self.flush(out)?;
         let v = self.chunk(parts, None)?;
         out.extend_from_slice(event(None, &v).as_bytes());
+        Ok(())
+    }
+
+    /// Holds back a delta's `parts`, writing the one held before.
+    fn hold(&mut self, parts: Vec<Value>, out: &mut BytesMut) -> Result<(), Fault> {
+        self.flush(out)?;
+        self.held = Some(parts);
+        Ok(())
+    }
+
+    /// Writes the delta held back, if one is.
+    fn flush(&mut self, out: &mut BytesMut) -> Result<(), Fault> {
+        if let Some(parts) = self.held.take() {
+            let v = self.chunk(parts, None)?;
+            out.extend_from_slice(event(None, &v).as_bytes());
+        }
         Ok(())
     }
 
@@ -301,7 +327,7 @@ impl EventStream {
         if let Some(fields) = slot.fields.take() {
             merge_fields(&mut part, &fields);
         }
-        self.emit(vec![part], out)
+        self.hold(vec![part], out)
     }
 
     fn close(&mut self, block: u32, out: &mut BytesMut) -> Result<(), Fault> {
@@ -324,14 +350,20 @@ impl EventStream {
         self.emit(vec![part], out)
     }
 
-    /// Ends every block, then writes the last response.
+    /// Ends every block, then writes the last response: the delta held
+    /// back with the finish and usage, unless a blocked one writes no
+    /// candidate to carry it.
     fn finish(&mut self, out: &mut BytesMut) -> Result<(), Fault> {
         let open: Vec<u32> = self.blocks.iter().map(|b| b.block).collect();
         for block in open {
             self.close(block, out)?;
         }
         let finish = self.finish.clone().unwrap_or(Finish::Stop);
-        let v = self.chunk(Vec::new(), Some(&finish))?;
+        if reason_of(&finish)? == BLOCKED {
+            self.flush(out)?;
+        }
+        let parts = self.held.take().unwrap_or_default();
+        let v = self.chunk(parts, Some(&finish))?;
         out.extend_from_slice(event(None, &v).as_bytes());
         Ok(())
     }
@@ -405,8 +437,9 @@ impl EventStream {
     fn write_end(&mut self, end: &Result<(), Fault>, out: &mut BytesMut) -> Result<(), Fault> {
         if let Err(f) = end {
             // What the provider finished before it broke off is kept.
-            if self.finish.is_some() {
-                self.finish(out)?;
+            match self.finish.is_some() {
+                true => self.finish(out)?,
+                false => self.flush(out)?,
             }
             let body = match f
                 .get::<respan_gateway_http::raw::RawReply>()

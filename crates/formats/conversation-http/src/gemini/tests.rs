@@ -650,6 +650,118 @@ fn a_stream_is_written_a_response_per_delta_and_a_last_with_the_finish() {
     );
 }
 
+fn text_then(after: &[Output]) -> Vec<Output> {
+    let mut replies = vec![
+        Output::start("r1", "gemini-x"),
+        Output::block_start(0, Block::Text),
+        Output::text(0, "Hel"),
+        Output::text(0, "lo"),
+        Output::block_end(0),
+    ];
+    replies.extend_from_slice(after);
+    replies
+}
+
+#[test]
+fn the_last_delta_of_text_carries_the_finish_and_usage() {
+    let usage = Usage::new(4, 2);
+    let replies = text_then(&[Output::Usage(usage), Output::finished(Finish::Stop)]);
+    let events = stream_events(&stream_of(&replies).expect("a stream"));
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert_eq!(
+        events[0]["candidates"][0]["content"]["parts"],
+        json!([{ "text": "Hel" }])
+    );
+    assert!(events[0].get("usageMetadata").is_none());
+    assert!(events[0]["candidates"][0].get("finishReason").is_none());
+    assert_eq!(events[0]["modelVersion"], "gemini-x");
+    let last = &events[1];
+    assert_eq!(
+        last["candidates"][0]["content"]["parts"],
+        json!([{ "text": "lo" }])
+    );
+    assert_eq!(last["candidates"][0]["finishReason"], "STOP");
+    assert_eq!(
+        last["usageMetadata"],
+        json!({ "promptTokenCount": 4, "candidatesTokenCount": 2, "totalTokenCount": 6 })
+    );
+    assert_eq!(last["responseId"], "r1");
+}
+
+#[test]
+fn a_gemini_stream_written_back_ends_as_it_came_with_text_finish_and_usage() {
+    let mut first = text_chunk("Hel");
+    first["usageMetadata"] = json!({ "promptTokenCount": 4, "totalTokenCount": 4 });
+    let replies = decode(&[first, text_chunk("lo"), last_chunk("!", "STOP")]).expect("events");
+    let events = stream_events(&stream_of(&replies).expect("a stream"));
+    assert_eq!(events.len(), 3, "{events:?}");
+    let last = &events[2];
+    assert_eq!(
+        last["candidates"][0]["content"]["parts"],
+        json!([{ "text": "!" }])
+    );
+    assert_eq!(last["candidates"][0]["finishReason"], "STOP");
+    assert_eq!(last["usageMetadata"]["candidatesTokenCount"], 2);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.get("usageMetadata").is_some())
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_stream_with_no_content_still_ends_with_its_finish() {
+    let replies = [
+        Output::start("r1", "gemini-x"),
+        Output::Usage(Usage::new(4, 0)),
+        Output::finished(Finish::Stop),
+    ];
+    let events = stream_events(&stream_of(&replies).expect("a stream"));
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["candidates"][0]["content"]["parts"], json!([]));
+    assert_eq!(events[0]["candidates"][0]["finishReason"], "STOP");
+    assert_eq!(events[0]["usageMetadata"]["promptTokenCount"], 4);
+}
+
+#[test]
+fn a_blocked_finish_writes_the_text_before_it_on_its_own() {
+    let blocked = Finish::native_or(GEMINI, "PROMPT_BLOCKED", Finish::Filtered);
+    let replies = text_then(&[Output::finished(blocked)]);
+    let events = stream_events(&stream_of(&replies).expect("a stream"));
+    let parts: Vec<Value> = events
+        .iter()
+        .flat_map(|e| {
+            e["candidates"][0]["content"]["parts"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .collect();
+    assert_eq!(parts, [json!({ "text": "Hel" }), json!({ "text": "lo" })]);
+    let last = events.last().expect("a last response");
+    assert!(last.get("candidates").is_none(), "{last}");
+}
+
+#[test]
+fn a_stream_that_breaks_off_writes_its_held_text_before_the_error() {
+    let mut enc = EventStream::default();
+    let mut out = BytesMut::new();
+    for reply in text_then(&[]) {
+        enc.encode_into(&reply, &mut out).expect("written");
+    }
+    enc.end_into(&Err(Fault::bad_request("cut")), &mut out)
+        .expect("ended");
+    let events = stream_events(&String::from_utf8_lossy(&out));
+    let texts: Vec<_> = events
+        .iter()
+        .filter_map(|e| e["candidates"][0]["content"]["parts"][0]["text"].as_str())
+        .collect();
+    assert_eq!(texts, ["Hel", "lo"]);
+    assert_eq!(events.last().expect("an error")["error"]["code"], 400);
+}
+
 #[test]
 fn what_another_format_says_is_dropped_and_what_none_can_is_refused() {
     let alien = Output::native("anthropic-messages", json!({ "type": "x" }));
